@@ -16,17 +16,7 @@
 #define	RESPONSE_ERROR_SOURCE_ADDRESS 9
 #define	RESPONSE_ERROR_CHECKSUM 10
 #define REQUEST_ERROR_ECHO 11
-
-#define INIT_FINISHED 12
-#define INIT_ERROR 13
-
-#define INIT_ERROR_STARTCOMM_REQ 14
-#define INIT_ERROR_STARTCOMM_RES 15
-#define INIT_ERROR_STARTCOMM_NEGRES 16
-
-#define INIT_ERROR_STARTDIAG_REQ 17
-#define INIT_ERROR_STARTDIAG_RES 18
-#define INIT_ERROR_STARTDIAG_NEGREQ 19
+#define REQUEST_ERROR_ISO_P3_MAX 12
 
 class KDS
 {
@@ -34,7 +24,7 @@ class KDS
 
 	KDS();
 	~KDS();
-	uint8_t initializeECU();
+	bool initializeECU();
 	uint8_t sendRequest(uint8_t *request);
 	uint8_t getResponse(uint8_t *response);
 	uint8_t communication_error;
@@ -64,12 +54,12 @@ class KDS
 	const uint8_t TESTER_ADDRESS = 0xF1;
 	const uint8_t FORMAT_BYTE = 0x80;
 
+  const uint16_t MAX_RESPONSE_LENGTH = 260;
+
 	uint32_t _start_time = 0;
 	uint32_t _elapsed_time = 0;
 
 
 };
-
-
 
 #endif
