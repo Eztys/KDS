@@ -30,16 +30,25 @@ KDS::~KDS(){
 
 uint8_t KDS::sendRequest(uint8_t *request) {
 
-	uint16_t request_length = 0;
-	uint8_t echo = 0;
+	uint16_t request_length;
+	int echo;
 
 	// Read length byte from request message
-	// When format byte = 0x81, the length byte is 1
-	if (request[0] == 0x81){
-		request_length = 5;
-	} else {
+	if (request[0] == 0x80){
+		// Request length is stored in 4th byte
 		request_length = request[3] + 5;
+	} else {
+		// Request length is stored in the 6 least significant bits of format byte
+		// Use bitmask to obtain length
+		// Bitmask = 0x3F = 0011 1111b
+		request_length = (request[0] & 0x3F) + 4;
 	}
+
+  // Check if request is send in time
+  if (checkTimingWindow(ISO_P3_MAX)){
+    communication_error = REQUEST_ERROR_ISO_P3_MAX;
+    return REQUEST_ERROR;
+  }
 
 	// Ensure the timing window between ECU response and current request
 	// is maintained
@@ -52,6 +61,9 @@ uint8_t KDS::sendRequest(uint8_t *request) {
 
 		// Reset timing window after every byte has been send
 		resetTimingWindow();
+
+		// Reset echo
+		echo = -1;
 
 		// Manditory inter byte delay used to read echo byte
 		while (!checkTimingWindow(ISO_P4_MIN)) {
@@ -66,13 +78,21 @@ uint8_t KDS::sendRequest(uint8_t *request) {
 				if (echo != request[i]) {
 
 					// Unexpected echo
-					communication_error = REQUEST_ERROR_ECHO;
+					communication_error = REQUEST_ERROR_WRONG_ECHO;
 
 					// Request failed
 					return REQUEST_ERROR;
 				}
 			}
 		}
+
+		// Echo of request byte was not response_received
+		// L9637D chip may be dead or not connected
+		if (echo < 0) {
+			communication_error = REQUEST_ERROR_NO_ECHO;
+			return REQUEST_ERROR;
+		}
+
 	}
 
 	// Request sucessfully sent
@@ -89,7 +109,7 @@ uint8_t KDS::getResponse(uint8_t *response) {
 
 	uint8_t new_byte = 0;			// Newly read byte
 	uint8_t index = 0;				// Index of received byte
-	uint16_t response_length = 260;	// Number of data message bytes
+	uint16_t response_length = MAX_RESPONSE_LENGTH;	// Number of data message bytes
 	bool response_received = false;
 
 	// Loop untill response is fully received, or an error has occured
@@ -98,15 +118,16 @@ uint8_t KDS::getResponse(uint8_t *response) {
 		// At least one byte is available in RX buffer
 		if (Serial.available() > 0) {
 
-			// Reset timing window as soon as possible
+			// Reset timing window as soon as a new byte in RX buffer has been detected
 			resetTimingWindow();
 
-			// Store byte in temporary variable
+			// Store new byte in temporary variable
 			new_byte = Serial.read();
 
-			// Store new byte in response buffer
+			// Concenate new byte to response message buffer
 			response[index] = new_byte;
 
+      // Check function of new byte
 			switch (index) {
 
 				// Byte 1
@@ -152,12 +173,17 @@ uint8_t KDS::getResponse(uint8_t *response) {
 					// Total message length = number of data bytes + header and checksum
 					response_length = response[index] + 5;
 
+          // Total message will not fit in response message buffer
+          if (response_length > MAX_RESPONSE_LENGTH) {
+            communication_error = RESPONSE_ERROR_BUFFER_OVERFLOW;
+            return RESPONSE_ERROR;
+          }
+
 					break;
 
 				// Byte 5+
 				// Data bytes and checksum
 				default:
-
 
 					// Complete message has been received
 					if (index == response_length - 1) {
@@ -192,13 +218,13 @@ uint8_t KDS::getResponse(uint8_t *response) {
 		}
 	}
 
-	// One complete response is received.
+	// One complete response has been received.
 	// ECU may send more responses within ISO_P2_MAX window.
 
 	// Open timing window of P2_MAX
 	while (!checkTimingWindow(ISO_P2_MAX)) {
 
-		// When data is available in RX buffer, then a new response is pending
+		// Data is available in RX buffer: a new response is pending
 		if (Serial.available() > 0) {
 			return RESPONSE_PENDING;
 		}
@@ -206,7 +232,7 @@ uint8_t KDS::getResponse(uint8_t *response) {
 	}
 
 	// One respons message has been received
-	// No response is pending (anymore)
+	// No response is pending
 	return RESPONSE_FINISHED;
 }
 
@@ -217,7 +243,7 @@ uint8_t KDS::getResponse(uint8_t *response) {
  * 	Output	true when communication line has been established, false otherwise	*
  ********************************************************************************/
 
-uint8_t KDS::initializeECU(){
+bool KDS::initializeECU(){
 
 	uint8_t start_communication[] = {FORMAT_BYTE+1, ECU_ADDRESS, TESTER_ADDRESS, 0x81, 0x00};
 	start_communication[4] = checksum(start_communication,4);
@@ -263,13 +289,13 @@ uint8_t KDS::initializeECU(){
 	 ************************************/
 
 	// Send start communication request
-	if (!sendRequest(start_communication)) return INIT_ERROR_STARTCOMM_REQ;
+	if (!sendRequest(start_communication)) return false;
 
 	// Check if response has been correctly received
-	if (getResponse(response_buffer) != RESPONSE_FINISHED) return INIT_ERROR_STARTCOMM_RES;
+	if (getResponse(response_buffer) != RESPONSE_FINISHED) return false;
 
 	// Check if response was positive
-	if (!checkPositiveResponse(start_communication, response_buffer)) return INIT_ERROR_STARTCOMM_NEGRES;
+	if (!checkPositiveResponse(start_communication, response_buffer)) return false;
 
 
 	/************************************
@@ -277,20 +303,20 @@ uint8_t KDS::initializeECU(){
 	 ************************************/
 
 	// Send start diagnostic mode request
-	if(!sendRequest(start_diagnostic_mode)) return INIT_ERROR_STARTDIAG_REQ;
+	if(!sendRequest(start_diagnostic_mode)) return false;
 
 	// Check if response has been correctly received
-	if (getResponse(response_buffer) != RESPONSE_FINISHED) return INIT_ERROR_STARTDIAG_RES;
+	if (getResponse(response_buffer) != RESPONSE_FINISHED) return false;
 
 	// Check if response was positive
-	if (!checkPositiveResponse(start_diagnostic_mode, response_buffer)) return INIT_ERROR_STARTDIAG_NEGREQ;
+	if (!checkPositiveResponse(start_diagnostic_mode, response_buffer)) return false;
 
 	// Initialization successful
-	return INIT_FINISHED;
+	return true;
 }
 
 /********************************************************************************
- *	Purpose	Reset millisecond timer												*
+ *	Purpose	Reset microsecond timer												*
  * 	Input	-																	*
  * 	Output	-																	*
  ********************************************************************************/
@@ -309,13 +335,12 @@ void KDS::resetTimingWindow(){
 bool KDS::checkTimingWindow(uint16_t time){
 
 	// Calculate elapsed time since timer was reset
-	// Testing MICROS for improved speed (i.e. us accuracy vs ms accuracy)
 	_elapsed_time = micros() - _start_time;
-
 
 	// Crucial to ensure that elapsed time is GREATER THAN (>) the desired timing window
 	// When GREATER OR EQUAL TO (>=) is used, requests are send too soon.
-	if (_elapsed_time > time*1000) {
+  // Convert input time from milliseconds to microseconds
+	if (_elapsed_time > time*1000UL) {
 		return true;
 	} else {
 		return false;
@@ -351,7 +376,7 @@ bool KDS::checkPositiveResponse(uint8_t *request, uint8_t *response){
 
 	uint8_t request_ServiceId = 0;
 
-	// When format byte is 0x81, there is no length byte and serviceID is one index earlier
+	// When format byte is 0x81, there is no length byte and serviceID is at index 3 instead of index 4
 	if (request[0] == 0x81) {
 		request_ServiceId = request[3];
 	} else {
