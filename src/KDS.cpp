@@ -30,15 +30,18 @@ KDS::~KDS(){
 
 uint8_t KDS::sendRequest(uint8_t *request) {
 
-	uint16_t request_length = 0;
-	uint8_t echo = 0;
+	uint16_t request_length;
+	int echo;
 
 	// Read length byte from request message
-	// When format byte = 0x81, the length byte is 1
-	if (request[0] == 0x81){
-		request_length = 5;
-	} else {
+	if (request[0] == 0x80){
+		// Request length is stored in 4th byte
 		request_length = request[3] + 5;
+	} else {
+		// Request length is stored in the 6 least significant bits of format byte
+		// Use bitmask to obtain length
+		// Bitmask = 0x3F = 0011 1111b
+		request_length = (request[0] & 0x3F) + 4;
 	}
 
   // Check if request is send in time
@@ -59,6 +62,9 @@ uint8_t KDS::sendRequest(uint8_t *request) {
 		// Reset timing window after every byte has been send
 		resetTimingWindow();
 
+		// Reset echo
+		echo = -1;
+
 		// Manditory inter byte delay used to read echo byte
 		while (!checkTimingWindow(ISO_P4_MIN)) {
 
@@ -72,13 +78,21 @@ uint8_t KDS::sendRequest(uint8_t *request) {
 				if (echo != request[i]) {
 
 					// Unexpected echo
-					communication_error = REQUEST_ERROR_ECHO;
+					communication_error = REQUEST_ERROR_WRONG_ECHO;
 
 					// Request failed
 					return REQUEST_ERROR;
 				}
 			}
 		}
+
+		// Echo of request byte was not response_received
+		// L9637D chip may be dead or not connected
+		if (echo < 0) {
+			communication_error = REQUEST_ERROR_NO_ECHO;
+			return REQUEST_ERROR;
+		}
+
 	}
 
 	// Request sucessfully sent
@@ -302,7 +316,7 @@ bool KDS::initializeECU(){
 }
 
 /********************************************************************************
- *	Purpose	Reset millisecond timer												*
+ *	Purpose	Reset microsecond timer												*
  * 	Input	-																	*
  * 	Output	-																	*
  ********************************************************************************/
@@ -321,7 +335,6 @@ void KDS::resetTimingWindow(){
 bool KDS::checkTimingWindow(uint16_t time){
 
 	// Calculate elapsed time since timer was reset
-	// Testing MICROS for improved speed (i.e. us accuracy vs ms accuracy)
 	_elapsed_time = micros() - _start_time;
 
 	// Crucial to ensure that elapsed time is GREATER THAN (>) the desired timing window
